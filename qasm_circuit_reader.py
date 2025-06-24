@@ -1,10 +1,17 @@
 import os
 import csv
 from qiskit import qasm2
+from qiskit.transpiler.passes import CollectLinearFunctions
 
 from collections import defaultdict
 
 circuit_path = "circuits_target_qiskit"
+
+circuit = qasm2.load(filename='circuits_target_qiskit/dj_indep_qiskit_10.qasm', 
+    custom_instructions=qasm2.LEGACY_CUSTOM_INSTRUCTIONS)
+print(circuit)
+
+exit()
 
 # read open qasm circuits from directory:
 data = []
