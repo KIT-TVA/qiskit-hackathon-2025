@@ -1,1 +1,6 @@
 qiskit==2.1
+matplotlib
+pylatexenc
+pydot
+sympy
+z3-solver
