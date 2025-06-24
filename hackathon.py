@@ -260,6 +260,8 @@ def get_quality_data(circuit: QuantumCircuit) -> list[int]:
 #circuit_path = "circuits_target_qiskit"
 circuit_path = "circuits_qiskit_opt0"
 for circuit_class_dir in os.listdir(circuit_path):
+    if circuit_class_dir.startswith(".DS_Store"):
+        continue
     with open(f'./circuit_data/{circuit_class_dir}.csv', mode='a', newline='') as circuit_file:
         circuit_writer = csv.writer(circuit_file)
 
