@@ -9,10 +9,10 @@ from qiskit.providers.fake_provider import GenericBackendV2
 from qiskit.circuit import library as lib
 from qiskit.visualization import pass_manager_drawer, staged_pass_manager_drawer
 from qiskit.passmanager import GenericPass
-from qiskit_aer import AerSimulator
 from qiskit.passmanager.base_tasks import Task
 from qiskit.transpiler import PassManager, StagedPassManager, generate_preset_pass_manager
 from qiskit.transpiler.preset_passmanagers.plugin import list_stage_plugins
+import contextlib, signal, time
 from qiskit.transpiler.passes import (
     ALAPScheduleAnalysis,
     InverseCancellation,
@@ -52,6 +52,32 @@ from qiskit.transpiler.passes import (
     ContractIdleWiresInControlFlow,
     OptimizeCliffordT,
 )
+
+import contextlib, signal, time
+
+class TimeOut(Exception):
+    pass
+
+
+@contextlib.contextmanager
+def time_limit(seconds: int):
+    """
+    UNIX-only - uses SIGALRM, so it works on macOS/Linux but **not** on Windows.
+    Usage:
+        with time_limit(120):
+            long_running_call()
+    """
+    def _handle_timeout(signum, frame):          # pylint: disable=unused-argument
+        raise TimeOut(f"⏰   exceeded {seconds}s")
+
+    old_handler = signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)    # start countdown
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)      # cancel alarm
+        signal.signal(signal.SIGALRM, old_handler)   # restore handler
+
 
 def create_pass_manager():
     backend = GenericBackendV2(num_qubits=5)
@@ -238,6 +264,8 @@ for circuit_class_dir in os.listdir(circuit_path):
         circuit_writer = csv.writer(circuit_file)
 
         for filename in os.listdir(os.path.join(circuit_path, circuit_class_dir)):
+            if not filename.endswith(".qasm"):
+                continue
             circuit_count = filename.split("_")[-1][:-5] # Extract the number from the filename
             type = filename[:-(5 + len(circuit_count) + 1)]
             print(f"Processing circuit: {filename} with count {circuit_count} of type {type}")
@@ -286,14 +314,19 @@ for circuit_class_dir in os.listdir(circuit_path):
                     vec = get_configuration_vector(optimizations)
 
                     # Transpile it by calling the run method of the pass manager
-                    start_time = time.perf_counter()
-                    transpiled_level0 = optimize_pass_manager_level0.run(translated)
-                    elapsed_time = time.perf_counter() - start_time
+                    try:
+                        with time_limit(120):  # ← 120-second guard
+                            start_time = time.perf_counter()
+                            transpiled_level0 = optimize_pass_manager_level0.run(translated)
+                            elapsed_time = time.perf_counter() - start_time
+                            transpiled_writer.writerow([vec] + get_quality_data(transpiled_level0) + [elapsed_time])
                     #transpiled = optimize_pass_manager.run(translated)
                     #transpiled_no_opt = optimize_pass_manager_no_opt.run(translated)
                     #transpiled_all_opt = optimize_pass_manager_all_opt.run(translated)
-
-                    #print(f"Combination {i + 1}: {[opt for opt in optimizations]}")
+                    except TimeOut as err:
+                        print(f"⚠️  {err} on combination {i + 1}; skipping.")
+                        continue
+                        #print(f"Combination {i + 1}: {[opt for opt in optimizations]}")
                     #print("circuit:", get_quality_data(circuit))
                     #print("translated:", get_quality_data(translated))
                     #print("optimized:", get_quality_data(transpiled))
@@ -312,7 +345,6 @@ for circuit_class_dir in os.listdir(circuit_path):
                     # t gate count
                     # depth (could grow as we optimize)
                     # size
-                    transpiled_writer.writerow([vec] + get_quality_data(transpiled_level0) + [elapsed_time])
 
                     #print(f"Combination {i + 1}: {optimizations} depth: {transpiled.depth()} width: {transpiled.width()} size: {transpiled.size()} cnot_count: {cnot_count} t_count: {t_count} elapsed_time: {elapsed_time:.2f}s")
                     #print_circuit(transpiled)
