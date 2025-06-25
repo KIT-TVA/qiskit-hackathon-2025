@@ -1,17 +1,28 @@
 from qiskit.transpiler.passes import PadDynamicalDecoupling
-
-from qiskit.dagcircuit import DAGCircuit
 from qiskit.transpiler.instruction_durations import InstructionDurations
-from qiskit.circuit import Gate
 from qiskit.transpiler.target import Target
 from qiskit.transpiler import PassManager
+from qiskit.circuit import library as lib
+from qiskit.transpiler.passes import ALAPScheduleAnalysis
+from qiskit import QuantumCircuit
+from qiskit.transpiler import Target
+from qiskit.visualization import timeline_drawer
+from qiskit.transpiler import PassManager, InstructionDurations, Target, CouplingMap
+from qiskit_ibm_runtime.fake_provider import FakeEssexV2
 
-IGNORE_GATES = set(["id", "measure"])
 DEBUG = False
+IMAGE_PATH = "img/"
+
+# In the future also ignore parameterized rotational gates
+IGNORE_GATES = set(["id", "measure"])
+
+# Dict keys
 GATE_NAME = "gate_name"
 ERROR = "error"
 
-
+"""
+    For a target returns a dictiory of minimal error gate for each qubit
+"""
 def get_errors(target):
     # Dict of minimal error gate for each qubit in the form: {qubit_nr: {min_error, gate_name}}
     errors = {}
@@ -34,7 +45,6 @@ def get_errors(target):
 
         inst_props = target[gate_name]
         for qubits, props in inst_props.items():
-
             # If we have an error for the gate and qubit
             if(props is not None and props.error is not None):
                 curr_error = props.error
@@ -43,10 +53,8 @@ def get_errors(target):
                 if curr_error == 0.0:
                     break
 
+                # Get qubit (as we have only single qubit gates here)
                 qubit = qubits[0]
-
-                if DEBUG:
-                    print(gate_name, qubit, curr_error)
 
                 # If there was a previously found error
                 if (qubit in errors):
@@ -64,179 +72,129 @@ def get_errors(target):
 
     return errors
 
-def add_dyn_decoupling(pass_manager, target, errors):
+"""
+    Uses an error dictionary to add single qubit PadDynamicalDecoupling with minimal error single qubit gates to a pass manager.
+"""
+def add_dyn_decoupling(pass_manager, target, errors, durations=None):
+
+    if durations is None:
+        durations = target.durations
 
     # For each qbit run super with minimal error gate
     for qubit_key, val in errors.items():
-        gate_name = val[GATE_NAME]
+        # DEBUG
+        if(qubit_key == 0):
+            gate_name = val[GATE_NAME]
 
-        instruction = target.operation_from_name(gate_name)
-        if DEBUG:
-            print(instruction)
-        dd_sequence = [instruction, instruction]
+            instruction = target.operation_from_name(gate_name)
+            if DEBUG:
+                print("Added decoupling:")
+                print(instruction)
+                print(qubit_key)
+            dd_sequence = [instruction, instruction]
+            
+            dec = PadDynamicalDecoupling(durations, dd_sequence, qubits=qubit_key)
 
-        durations = target.durations
-        dec = PadDynamicalDecoupling(durations, dd_sequence, qubits=qubit_key)
-
+        pass_manager.append(ALAPScheduleAnalysis(durations))
         pass_manager.append(dec)
 
     return pass_manager
 
+# ---------------------------------------
+# Create Mock circuit
+# ---------------------------------------
 
-from qiskit.circuit import library as lib
-from qiskit.transpiler.passes import (
-    UnitarySynthesis,
-    Unroll3qOrMore,
-    Collect2qBlocks,
-    ConsolidateBlocks,
-    ALAPScheduleAnalysis,
-    # InverseCancellation,
-    # Optimize1qGates,
-    # Collect1qRuns,
-    # HoareOptimizer,
+circ = QuantumCircuit(4)
+circ.h(0)
+circ.cx(0, 1)
+circ.cx(1, 2)
+circ.cx(2, 3)
+circ.measure_all()
+durations = InstructionDurations(
+    [("h", None, 50), ("cx", [0, 1], 700), ("reset", None, 10),
+     ("cx", [1, 2], 200), ("cx", [2, 3], 300),
+     ("x", None, 50), ("measure", None, 1000)],
+    dt=1e-7
 )
-from qiskit.transpiler import StagedPassManager, generate_preset_pass_manager
-from qiskit.transpiler.preset_passmanagers.plugin import list_stage_plugins
-import numpy as np
+target = Target.from_configuration(
+    ["h", "cx", "reset", "x", "measure"],
+    num_qubits=4,
+    coupling_map=CouplingMap.from_line(4, bidirectional=False),
+    instruction_durations=durations,
+    dt=1e-7,
+)
 
-def create_pass_manager(backend):
-    
-    # basis_gates = ["rx", "ry", "rxx"]
+# Mock errors for x gates
+inst_props = target["x"]
+for qubits, props in inst_props.items():
+    if props is not None:
+        props.error = 0.2
 
-    basis_gates = []
-    config = backend.configuration()
-    for instruction in config.supported_instructions:
-        basis_gates.append(instruction)
+# Mock errors for h gates
+inst_props = target["h"]
+for qubits, props in inst_props.items():
+    if props is not None:
+        props.error = 0.1
 
-    init = PassManager(
-        [UnitarySynthesis(basis_gates, min_qubits=3), Unroll3qOrMore()]
-    )
-    translate = PassManager(
-        [
-            Collect2qBlocks(),
-            ConsolidateBlocks(basis_gates=basis_gates),
-            UnitarySynthesis(basis_gates),
-        ]
-    )
-    staged_pm = StagedPassManager(
-        # TODO
-        # stages=["init", "translation"], init=init, translation=translate
-    )
+circ.draw('mpl', filename=IMAGE_PATH+'circuit.png')
 
-    return staged_pm
+# ---------------------------------------
+# Baseline without decoupling
+# ---------------------------------------
 
-from qiskit_ibm_runtime.fake_provider import FakeBoeblingenV2
-from qiskit_ibm_runtime.fake_provider import FakeCairoV2
-from qiskit_ibm_runtime.fake_provider import FakeVigoV2
-from qiskit.providers.fake_provider import GenericBackendV2
-
-backend = FakeVigoV2()
-# backend = GenericBackendV2(num_qubits=12)
-target=backend.target
-
-# if DEBUG:
-#     my_pass.draw(filename='test.png')
-
-# # TODO example
-from qiskit import QuantumRegister, ClassicalRegister, QuantumCircuit
-q = QuantumRegister(3, 'q')
-c = ClassicalRegister(3, 'c')
-circ = QuantumCircuit(q, c)
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rz(0.5, q[1])
-circ.cx(q[0], q[1])
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rzz(10,q[0], q[1])
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rz(0.5, q[1])
-circ.cx(q[0], q[1])
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rzz(10,q[0], q[1])
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rz(0.5, q[1])
-circ.cx(q[0], q[1])
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rzz(10,q[0], q[1])
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rz(0.5, q[1])
-circ.cx(q[0], q[1])
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rzz(10,q[0], q[1])
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rz(0.5, q[1])
-circ.cx(q[0], q[1])
-circ.h(q[0])
-circ.cx(q[0], q[1])
-circ.rzz(10,q[0], q[1])
-
-circ.cx(q[0], q[2])
-circ.measure(q[0], c[0])
-
-# from qiskit.circuit.library import efficient_su2
-# circ = efficient_su2(12, entanglement="circular", reps=1)
-
-circ.draw('mpl', filename='circuit.png')
-print(target.durations)
-
-# from qiskit.transpiler.preset_passmanagers import level_3
-# from qiskit.transpiler import PassManagerConfig
-
-# # Pretranspile
-# # Create a pass manager configured for the backend
-# pm_config = PassManagerConfig(backend=backend)
-# pass_manager = level_3(pass_manager_config=pm_config)
-
-# Baseline
-
-pass_manager = create_pass_manager(backend)
-
-errors = get_errors(target)
-scheduling = PassManager()
-scheduling.append(ALAPScheduleAnalysis(target=backend.target))
-# scheduling = add_dyn_decoupling(scheduling, target, errors)
-
-pass_manager.scheduling = scheduling
+# Create pass manager
+pass_manager = PassManager()
+pass_manager.scheduling = PassManager([ALAPScheduleAnalysis(durations)])
 
 # Run the circuit through the pass manager
 transpiled_circuit = pass_manager.run(circ)
-transpiled_circuit.draw('mpl', filename='circuit_transpiled.png')
+timeline_drawer(transpiled_circuit, target=target, filename=IMAGE_PATH+"timeline.png")
 
-# With Dyn Dec
-pass_manager = create_pass_manager(backend)
+# ---------------------------------------
+# With Dynamic Decoupling
+# ---------------------------------------
 
-errors = get_errors(target)
+# Create pass manager
 scheduling = PassManager()
-scheduling.append(ALAPScheduleAnalysis(target=backend.target))
-# TODO 
+scheduling.append(ALAPScheduleAnalysis(durations))
+
+# Use balanced X-X sequence on all qubits
 dd_sequence = [lib.XGate(), lib.XGate()]
-scheduling.append(PadDynamicalDecoupling(target=backend.target, dd_sequence=dd_sequence))
-
-pass_manager.scheduling = scheduling
+scheduling.append(PadDynamicalDecoupling(durations, dd_sequence=dd_sequence))
 
 # Run the circuit through the pass manager
-transpiled_circuit = pass_manager.run(circ)
-transpiled_circuit.draw('mpl', filename='circuit_transpiled_dyn_dec.png')
+transpiled_circuit = scheduling.run(circ)
+timeline_drawer(transpiled_circuit, target=target, filename=IMAGE_PATH+"timeline_dyn_dec.png")
 
-# With Custom Dyn Dec
-pass_manager = create_pass_manager(backend)
+# ---------------------------------------
+# With Single Qubit Optimized Dynamic Decoupling
+# ---------------------------------------
 
+# Get target specific errors
 errors = get_errors(target)
-scheduling = PassManager()
-scheduling.append(ALAPScheduleAnalysis(target=backend.target))
-scheduling = add_dyn_decoupling(scheduling, target, errors)
 
-pass_manager.scheduling = scheduling
+# Create pass manager
+scheduling = PassManager()
+scheduling = add_dyn_decoupling(scheduling, target, errors, durations)
 
 # Run the circuit through the pass manager
-transpiled_circuit = pass_manager.run(circ)
-transpiled_circuit.draw('mpl', filename='circuit_transpiled_dyn_dec_custom.png')
+transpiled_circuit = scheduling.run(circ)
+timeline_drawer(transpiled_circuit, target=target, filename=IMAGE_PATH+"timeline_dyn_dec_custom.png")
 
+# ---------------------------------------
+# Backend Compatiblity 
+# ---------------------------------------
+
+backend = FakeEssexV2()
+target=backend.target
+durations = target.durations()
+
+# Get target specific errors
+errors = get_errors(target)
+
+# Create pass manager
+scheduling = PassManager()
+scheduling = add_dyn_decoupling(scheduling, target, errors, durations)
+
+# Show created pass manager
+scheduling.draw(IMAGE_PATH+"provider_pass_manager.png")
