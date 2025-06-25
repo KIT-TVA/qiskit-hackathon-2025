@@ -8,11 +8,9 @@ from qiskit import QuantumCircuit, qasm2, transpile
 from qiskit.providers.fake_provider import GenericBackendV2
 from qiskit.circuit import library as lib
 from qiskit.visualization import pass_manager_drawer, staged_pass_manager_drawer
-from qiskit.passmanager import GenericPass
 from qiskit.passmanager.base_tasks import Task
 from qiskit.transpiler import PassManager, StagedPassManager, generate_preset_pass_manager
 from qiskit.transpiler.preset_passmanagers.plugin import list_stage_plugins
-import contextlib, signal, time
 from qiskit.transpiler.passes import (
     ALAPScheduleAnalysis,
     InverseCancellation,
@@ -52,32 +50,6 @@ from qiskit.transpiler.passes import (
     ContractIdleWiresInControlFlow,
     OptimizeCliffordT,
 )
-
-import contextlib, signal, time
-
-class TimeOut(Exception):
-    pass
-
-
-@contextlib.contextmanager
-def time_limit(seconds: int):
-    """
-    UNIX-only - uses SIGALRM, so it works on macOS/Linux but **not** on Windows.
-    Usage:
-        with time_limit(120):
-            long_running_call()
-    """
-    def _handle_timeout(signum, frame):          # pylint: disable=unused-argument
-        raise TimeOut(f"⏰   exceeded {seconds}s")
-
-    old_handler = signal.signal(signal.SIGALRM, _handle_timeout)
-    signal.setitimer(signal.ITIMER_REAL, seconds)    # start countdown
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)      # cancel alarm
-        signal.signal(signal.SIGALRM, old_handler)   # restore handler
-
 
 def create_pass_manager():
     backend = GenericBackendV2(num_qubits=5)
@@ -260,101 +232,61 @@ def get_quality_data(circuit: QuantumCircuit) -> list[int]:
 #circuit_path = "circuits_target_qiskit"
 circuit_path = "circuits_qiskit_opt0"
 for circuit_class_dir in os.listdir(circuit_path):
-    if circuit_class_dir.startswith(".DS_Store"):
+    class_dir_path = os.path.join(circuit_path, circuit_class_dir)
+    if not os.path.isdir(class_dir_path):
         continue
+
     with open(f'./circuit_data/{circuit_class_dir}.csv', mode='a', newline='') as circuit_file:
         circuit_writer = csv.writer(circuit_file)
 
-        for filename in os.listdir(os.path.join(circuit_path, circuit_class_dir)):
-            if not filename.endswith(".qasm"):
+        for filename in os.listdir(class_dir_path):
+            if not filename.endswith('.qasm'):
                 continue
+            
+            transpiled_data_file = f'./transpiled_data/{circuit_class_dir}/{filename}.csv'
+            if os.path.exists(transpiled_data_file):
+                continue  # Skip if already processed
+
             circuit_count = filename.split("_")[-1][:-5] # Extract the number from the filename
             type = filename[:-(5 + len(circuit_count) + 1)]
             print(f"Processing circuit: {filename} with count {circuit_count} of type {type}")
-            if int(circuit_count) > 40:
+            if int(circuit_count) > 25:
                 continue
 
-            path = os.path.join(circuit_path, circuit_class_dir, filename)
+            class_dir_path = os.path.join(circuit_path, circuit_class_dir, filename)
+
             # interpret openqasm als qiskit QuantumCircuit
-            circuit = qasm2.load(filename=path, custom_instructions=qasm2.LEGACY_CUSTOM_INSTRUCTIONS)
+            circuit = qasm2.load(filename=class_dir_path, custom_instructions=qasm2.LEGACY_CUSTOM_INSTRUCTIONS)
 
             optimizer_combinations = generate_optimizer_combinations(3, 3)
 
             os.makedirs(f'./transpiled_data/{circuit_class_dir}', exist_ok=True)
 
-            with open(f'./transpiled_data/{circuit_class_dir}/{filename}.csv', mode='w', newline='') as transpiled_file:
-                transpiled_writer = csv.writer(transpiled_file)
-
-                # Do passes until optimization
+            with open(transpiled_data_file, mode='a', newline='') as transpiled_file:
+                # Do passes until optimization to get explanatory variables from the circuit we use to start the optimization
                 pass_manager = StagedPassManager(stages=["init", "layout", "routing", "translation"])
-
                 translated = pass_manager.run(circuit)
-                #print(f"Translated circuit: {translated.num_qubits} qubits, {translated.depth()} depth, {translated.width()} width")
-                #print_circuit(translated)
-
                 x_variables = get_explanatory_variables(translated)
-
                 circuit_writer.writerow([filename] + x_variables)
+
+                transpiled_writer = csv.writer(transpiled_file)
+                opt_start_time = time.perf_counter()
 
                 for i, optimizations in enumerate(optimizer_combinations):
                     # Do optimization pass
-                    #optimize_pass_manager : StagedPassManager = generate_preset_pass_manager(optimization_level=3)
-                    #optimize_pass_manager.optimization = PassManager(optimizations)
-                    
                     optimize_pass_manager_level0 : StagedPassManager = generate_preset_pass_manager(optimization_level=0)
                     optimize_pass_manager_level0.optimization = PassManager(optimizations)
-                    
-                    #optimize_pass_manager_no_opt : StagedPassManager = generate_preset_pass_manager(optimization_level=0)
-
-                    #optimize_pass_manager_all_opt : StagedPassManager = generate_preset_pass_manager(optimization_level=0)
-                    #optimize_pass_manager_all_opt.optimization = PassManager([cls() for cls in OPTIMIZER_CLASSES])
-
-                    # measure time
-                    # timeout 1 minute
 
                     # load best x (10) configurations per circuit - with columns: circuit_name, features, configuration_vector
                     vec = get_configuration_vector(optimizations)
 
                     # Transpile it by calling the run method of the pass manager
-                    try:
-                        with time_limit(120):  # ← 120-second guard
-                            start_time = time.perf_counter()
-                            transpiled_level0 = optimize_pass_manager_level0.run(translated)
-                            elapsed_time = time.perf_counter() - start_time
-                            transpiled_writer.writerow([vec] + get_quality_data(transpiled_level0) + [elapsed_time])
-                    #transpiled = optimize_pass_manager.run(translated)
-                    #transpiled_no_opt = optimize_pass_manager_no_opt.run(translated)
-                    #transpiled_all_opt = optimize_pass_manager_all_opt.run(translated)
-                    except TimeOut as err:
-                        print(f"⚠️  {err} on combination {i + 1}; skipping.")
-                        continue
-                        #print(f"Combination {i + 1}: {[opt for opt in optimizations]}")
-                    #print("circuit:", get_quality_data(circuit))
-                    #print("translated:", get_quality_data(translated))
-                    #print("optimized:", get_quality_data(transpiled))
-                    #print("optimized level 0:", get_quality_data(transpiled_level0))
-                    #print("optimized no opt:", get_quality_data(transpiled_no_opt))
-                    #print("optimized all opt:", get_quality_data(transpiled_all_opt))
+                    start_time = time.perf_counter()
+                    transpiled_level0 = optimize_pass_manager_level0.run(translated)
+                    elapsed_time = time.perf_counter() - start_time
 
-                    #simulator = AerSimulator()
-                    #tr = transpile(transpiled, simulator)
-                    #print(tr)
-                    #res = simulator.run(tr, shots=1024)
-                    
-                    #print(res.result())
+                    transpiled_writer.writerow([vec] + get_quality_data(transpiled_level0) + [elapsed_time])
 
-                    # c-not gate count: most important
-                    # t gate count
-                    # depth (could grow as we optimize)
-                    # size
+                opt_elapsed_time = time.perf_counter() - opt_start_time
+                print(f"Optimizations took {opt_elapsed_time:.2f} seconds for {filename} with {len(optimizer_combinations)} combinations.")
 
-                    #print(f"Combination {i + 1}: {optimizations} depth: {transpiled.depth()} width: {transpiled.width()} size: {transpiled.size()} cnot_count: {cnot_count} t_count: {t_count} elapsed_time: {elapsed_time:.2f}s")
-                    #print_circuit(transpiled)
-
-                # Write best x (10) configurations to file
-                # sorted_results = sorted(results, key=lambda x: x[1])
-                # print(f"Found {len(sorted_results)} configurations for {filename}, with best result with {sorted_results[0][1]} qubits and worst with {sorted_results[-1][1]} qubits.")
-
-                # for vec, num_qubits in sorted_results[:10]:
-                #     writer.writerow([filename, vec, num_qubits])
-                #     print(f"Written: {filename}, {vec}, {num_qubits}")
