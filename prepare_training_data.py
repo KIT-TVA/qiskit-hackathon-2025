@@ -1,6 +1,20 @@
 import csv
 import os
 
+def get_explanatory_variables_data(circuit_class):
+    """
+    Returns the explanatory variables from the CSV file in circuit_data/{circuit_class_dir}.csv
+    With rows: qasm_file, depth, width, size, cnot_count, t_count, two_qubit_count, three_qubit_count
+    """
+    data = []
+    with open(f'./circuit_data/{circuit_class}.csv', mode='r') as circuit_class_file:
+        circuit_reader = csv.reader(circuit_class_file)
+        for row in circuit_reader:
+            # qasm_file, depth, width, size, cnot_count, t_count, two_qubit_count, three_qubit_count
+            data.append(row)
+    
+    return data
+
 def get_transpiled_data(file_path):
     """
     Returns the transpiled data from the CSV file in transpiled_data/{circuit_class_dir}/{filename}.csv
@@ -22,7 +36,7 @@ def get_transpiled_data(file_path):
     return data                    
 
 
-def get_best_combinations(data):
+def sort_best_combinations(data):
     """
     Sorts the data by depth, size, and cnot_count in descending order.
     """
@@ -31,16 +45,24 @@ def get_best_combinations(data):
 
 # Save the sorted data to a CSV file
 # Training data csv layout: id, depth, width, size, cnot_count, t_count, combination
-def save_sorted_data_to_csv(sorted_data, filename='training_data.csv', amount=10):
+def save_sorted_data_to_csv(sorted_data, x_variables, filename='training_data.csv', amount=10):
     with open(filename, mode='a', newline='') as file:
         writer = csv.writer(file)
         for data in sorted_data[:amount]:
-            # Assuming data is structured as [filename, depth, size, cnot_count, combination]
-            writer.writerow([data[0], *data[2:], data[1]])
+            # Assuming data is structured as [filename, ...x_vars, combination]
+            # Get the x variables from the explanatory variables data matched by filename
+            x_vars = [x for x in x_variables if data[0] == x[0] + ".csv"]
+            if not x_vars:
+                print(f'No explanatory variables found for {data[0]}')
+                continue
+
+            writer.writerow([*x_vars[0], data[1]])
 
 for circuit_class_dir in os.listdir('./transpiled_data'):
     if not os.path.isdir(f'./transpiled_data/{circuit_class_dir}'):
         continue
+
+    x_variables = get_explanatory_variables_data(circuit_class_dir)
 
     for filename in os.listdir(f'./transpiled_data/{circuit_class_dir}'):
         if not filename.endswith('.csv'):
@@ -49,10 +71,9 @@ for circuit_class_dir in os.listdir('./transpiled_data'):
         file_path = f'./transpiled_data/{circuit_class_dir}/{filename}'
         
         data = get_transpiled_data(file_path)
+        sorted_data = sort_best_combinations(data)
 
-        sorted_data = get_best_combinations(data)
-
-        save_sorted_data_to_csv(sorted_data, amount=10)
+        save_sorted_data_to_csv(sorted_data, x_variables, amount=10)
 
         print(f'Found {len(sorted_data)} combinations for {filename}')
 
