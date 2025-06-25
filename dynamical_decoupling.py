@@ -6,6 +6,7 @@ from qiskit.circuit import Gate
 from qiskit.transpiler.target import Target
 from qiskit.transpiler import PassManager
 
+# Also ignore parameterized rotational gates
 IGNORE_GATES = set(["id", "measure"])
 DEBUG = False
 GATE_NAME = "gate_name"
@@ -109,18 +110,21 @@ def create_pass_manager(backend):
         basis_gates.append(instruction)
 
     init = PassManager(
-        [UnitarySynthesis(basis_gates, min_qubits=3), Unroll3qOrMore()]
+        [
+            UnitarySynthesis(basis_gates, min_qubits=3),
+            # Unroll3qOrMore()
+        ]
     )
     translate = PassManager(
         [
-            Collect2qBlocks(),
-            ConsolidateBlocks(basis_gates=basis_gates),
-            UnitarySynthesis(basis_gates),
+            # Collect2qBlocks(),
+            # ConsolidateBlocks(basis_gates=basis_gates),
+            # UnitarySynthesis(basis_gates),
         ]
     )
     staged_pm = StagedPassManager(
         # TODO
-        # stages=["init", "translation"], init=init, translation=translate
+        stages=["init", "translation"], init=init, translation=translate
     )
 
     return staged_pm
@@ -130,8 +134,9 @@ from qiskit_ibm_runtime.fake_provider import FakeCairoV2
 from qiskit_ibm_runtime.fake_provider import FakeVigoV2
 from qiskit.providers.fake_provider import GenericBackendV2
 
-backend = FakeVigoV2()
+backend = FakeCairoV2()
 # backend = GenericBackendV2(num_qubits=12)
+# TODO for a generic backend we have to mock a config
 target=backend.target
 
 # if DEBUG:
@@ -142,6 +147,9 @@ from qiskit import QuantumRegister, ClassicalRegister, QuantumCircuit
 q = QuantumRegister(3, 'q')
 c = ClassicalRegister(3, 'c')
 circ = QuantumCircuit(q, c)
+
+circ.h(q[0])
+circ.cx(q[0], q[2])
 circ.h(q[0])
 circ.cx(q[0], q[1])
 circ.rz(0.5, q[1])
@@ -177,15 +185,22 @@ circ.cx(q[0], q[1])
 circ.h(q[0])
 circ.cx(q[0], q[1])
 circ.rzz(10,q[0], q[1])
+
+# circ.delay(1000, 0, unit='dt')   # simulate a delay
+
 
 circ.cx(q[0], q[2])
 circ.measure(q[0], c[0])
 
 # from qiskit.circuit.library import efficient_su2
 # circ = efficient_su2(12, entanglement="circular", reps=1)
+# rng = np.random.default_rng(1234)
+# circ.assign_parameters(
+#     rng.uniform(-np.pi, np.pi, circ.num_parameters), inplace=True
+# )
 
 circ.draw('mpl', filename='circuit.png')
-print(target.durations)
+print(target.durations())
 
 # from qiskit.transpiler.preset_passmanagers import level_3
 # from qiskit.transpiler import PassManagerConfig
@@ -225,6 +240,8 @@ pass_manager.scheduling = scheduling
 # Run the circuit through the pass manager
 transpiled_circuit = pass_manager.run(circ)
 transpiled_circuit.draw('mpl', filename='circuit_transpiled_dyn_dec.png')
+# from qiskit.visualization import timeline_drawer
+# timeline_drawer(transpiled_circuit, target=target)
 
 # With Custom Dyn Dec
 pass_manager = create_pass_manager(backend)
