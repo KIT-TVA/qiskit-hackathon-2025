@@ -82,18 +82,17 @@ def add_dyn_decoupling(pass_manager, target, errors, durations=None):
 
     # For each qbit run super with minimal error gate
     for qubit_key, val in errors.items():
-        # DEBUG
-        if(qubit_key == 0):
-            gate_name = val[GATE_NAME]
+        
+        gate_name = val[GATE_NAME]
 
-            instruction = target.operation_from_name(gate_name)
-            if DEBUG:
-                print("Added decoupling:")
-                print(instruction)
-                print(qubit_key)
-            dd_sequence = [instruction, instruction]
-            
-            dec = PadDynamicalDecoupling(durations, dd_sequence, qubits=qubit_key)
+        instruction = target.operation_from_name(gate_name)
+        if DEBUG:
+            print("Added decoupling:")
+            print(instruction)
+            print(qubit_key)
+        dd_sequence = [instruction, instruction]
+        
+        dec = PadDynamicalDecoupling(durations, dd_sequence, qubits=[qubit_key])
 
         pass_manager.append(ALAPScheduleAnalysis(durations))
         pass_manager.append(dec)
@@ -134,7 +133,10 @@ for qubits, props in inst_props.items():
 inst_props = target["h"]
 for qubits, props in inst_props.items():
     if props is not None:
-        props.error = 0.1
+        if (qubits[0] == 1):
+            props.error = 0.3
+        else:
+            props.error = 0.1
 
 circ.draw('mpl', filename=IMAGE_PATH+'circuit.png')
 
