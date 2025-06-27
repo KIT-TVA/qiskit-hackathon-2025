@@ -1,8 +1,0 @@
-pandas~=2.2.3
-numpy~=2.0.1
-scikit-learn~=1.7.0
-xgboost~=3.0.1
-iterative-stratification
-optuna~=4.4.0
-joblib~=1.5.1
-scipy~=1.16.0
